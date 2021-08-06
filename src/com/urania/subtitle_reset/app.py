@@ -40,12 +40,13 @@ class Util:
 
     @staticmethod
     def scaling_transformation(x1: float, y1: float, y2: float) -> float:
+        """
+        return x2 according to x1/y1 = x2/y2
+        """
         return (x1 / y1) * y2
 
 
-class Node:
-    __slots__ = "start_time", "seconds", "text", "length", "__weakref__"
-
+class Part:
     def __init__(self, _start_time, _total_seconds, _text):
         self.start_time = Util.to_datetime(_start_time)
         self.seconds = Util.to_timedelta(_total_seconds).total_seconds()
@@ -55,80 +56,51 @@ class Node:
 
 def app(path):
     with codecs.open(path, encoding='utf-8') as f:
-        chain: deque[:Node] = deque(Node(p.start, p.duration, p.text) for p in pysrt.stream(f))
-    text = ''.join([item.text for item in chain])
+        all_parts: deque[:Part] = deque(Part(p.start, p.duration, p.text) for p in pysrt.stream(f))
 
-    # Load tokenizer
-    tokenizer = nltk.data.load('tokenizers/punkt/english.pickle')
+    text = ''.join(p.text for p in all_parts)
 
-    # Tokenize
-    sentences = deque(tokenizer.sentences_from_text(text))
-
-    # Set all indexes of end character as objs
-    objs = [tup[1] for tup in tokenizer.span_tokenize(text)]
+    # Initialize all sentences
+    sentences = [dict(start_pos=span[0], end_pos=span[1], text=text[span[0]: span[1]])
+                 for span in nltk.data.load('tokenizers/punkt/english.pickle').span_tokenize(text)]
 
     # Initialize parameter for scan
-    node = chain.popleft()
-    start, step, lp = 0, node.length, node.start_time
+    part = all_parts.popleft()
+    start, step, lp = 0, part.length, part.start_time
 
     # Scan and reset
-    dst = deque([])
-    for obj in objs:
-        while not start <= obj <= (start + step):
+    for sentence in sentences:
+        while not start <= sentence['end_pos'] <= (start + step):
             start += step
-            node = chain.popleft()
-            step = node.length
+            part = all_parts.popleft()
+            step = part.length
         else:
-            # seconds of last sentence in item
-            seconds_in_item = Util.scaling_transformation(
-                x1=(obj - start + 1),  # index of the last char
-                y1=step,  # total chars of item
-                y2=node.seconds,  # total seconds
-            )
-
-            # Combine the result for true end time
-            rp = datetime.timedelta(seconds=seconds_in_item) + node.start_time
-
-            # Append new item
-            dst.append((lp, rp, sentences.popleft()))
+            # Update time of sentence
+            sentence['start_time'] = lp
+            sentence['end_time'] = part.start_time + datetime.timedelta(
+                seconds=Util.scaling_transformation(x1=(sentence['end_pos'] - start + 1), y1=step, y2=part.seconds))
 
             # Update lp of duration
-            lp = rp
+            lp = sentence['end_time']
 
     # Merge short sentence to previous
-    done = deque([])
+    done = []
 
-    for tup in dst:
-        if len(tup[2]) > 16:
-            done.append(tup)
+    for cur in sentences:
+        if len(cur['text']) > 16:
+            done.append(cur)
         else:
-            previous: tuple = done.pop()
-            done.append((previous[0], tup[1], ' '.join([previous[2], tup[2]])))
+            prev: dict = done.pop()
+            new_text = ' '.join([prev['text'], cur['text']])
+            prev['end_pos'], prev['end_time'], prev['text'] = cur['end_pos'], cur['end_time'], new_text
+            done.append(prev)
 
     return done
 
 
 if __name__ == '__main__':
-    # ds = filter(lambda x: len(x[2]) > 180, app(r"e:\Youtube\Dynamic Programming.en.2.vtt"))
-    dst = app(r"e:\Youtube\Dynamic Programming.en.2.vtt")
-
+    t1 = datetime.datetime.now()
+    dst = [((str(v['start_time'])[11:23]), (str(v['end_time'])[11:23]), v['text'])
+           for v in app(r"e:\Youtube\Dynamic Programming.en.1.vtt")]
+    t2 = datetime.datetime.now()
     print(*dst, sep='\n')
-
-    # join string
-    # HEADER = 'WEBVTT\nKind: captions\nLanguage: en'
-    # SEP = ' --> '
-    # SENTINEL = -1
-    # dst.append(SENTINEL)
-    # dst.append(HEADER)
-    # while dst[0] != SENTINEL:
-    #     item = dst.popleft()
-    #     dst.append('\n'.join(
-    #         [''.join([item[0], SEP, item[1]]), item[2]]
-    #     ))
-    # else:
-    #     dst.popleft()
-    #
-    # buffer = '\n\n'.join(dst)
-    #
-    # with open(r"e:\Youtube\out.vtt", 'w') as f:
-    #     f.writelines(buffer)
